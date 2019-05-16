@@ -1,6 +1,6 @@
 ---
 title: "Twitter Scraping R Example"
-author: "Luke Shaw"
+author: "Luke Shaw & Frances Carpenter"
 output:
   html_document:
     code_folding: hide
@@ -16,10 +16,7 @@ figwidth=10
 figheight=6.5
 ```
 
-Example of using the package rtweet to live scrape from twitter. Currently the code contains all the information required for running live, but when run as a markdown document uses pre-created files (in Blue Peter fassion "here's one I made earlier"). The person running needs to specify where they have saved the following two files in the code chunk "dir":
-1) coffee_backup_tweets.rds
-2) lda_ten_topics.json
-3) lda_ten_topics.png
+Example of using the package rtweet to live scrape from twitter. Currently the code contains all the information required for running live, but when run as a markdown document uses pre-created files (in Blue Peter fassion "here's one I made earlier").
 
 ```{r, message=FALSE}
 #Necessary packages for this script. If not in lib use fn install.packages()
@@ -34,17 +31,21 @@ library("wordcloud")
 library("jsonlite")
 library("lda")
 library("LDAvis")
-
+library("udpipe")
+library("lattice")
+library("tidytext")
 ```
 
 # Getting the Data
 
-```{r, echo=TRUE}
+What phrase do we want to search for?
+```{r search-phrase, echo=TRUE}
 #what do we want to search for? [NOTE "#coffee" is default saved file]
 search_phrase <- '#coffee'
 ```
 
-```{r, eval=FALSE}
+Use the package rtweet, which uses the twiiter API to collect the tweets.
+```{r search-tweets, eval=FALSE}
 ## search for 1000 tweets (max 18,000 per 15 min interval) featuring the chosen 
 ## search_phrase. We only search for tweets written in english - which is 
 ## important when performing analysis on the text
@@ -57,48 +58,42 @@ rt <- search_tweets(
 )
 ```
 
-if the above code doesn't run correctly, use the below code and using the
-pop-up find the file "coffee_backup_tweets.rds"
-```{r dir, echo=FALSE}
-my_dir =  "/Users/lukeshaw/Google Drive/Personal Folder/ONS_Newport/PERSONAL_smr_with_r/twitter_scrape_example/rmd_stored_files/"
-```
-
-```{r}
-#note you'd have to define my_dir as working directory where file is
-rt <- readRDS(paste0(my_dir,"coffee_backup_tweets.rds"))
+(in reality it's a pre-saved file)
+```{r quick-search-tweets}
+#read in the pre-run data as is a lot quicker. 
+rt <- readRDS("rmd_stored_files/coffee_backup_tweets.rds")
 ```
 
 # Initial Data Analysis
 
-```{r, echo=TRUE}
-#What does the data look like?
-dim(rt) #each row is a tweet, each column is some information
-colnames(rt)[1:6] #first few column names. "test" is the tweet itself
+We can see our data has the dimensions `r dim(rt)` - which means `r dim(rt)[1]` individual tweets nad `r dim(rt)[2]` columns. The first few column names are
+```{r colnames, echo=TRUE}
+colnames(rt)[1:6] #first few column names. "text" is the tweet itself
 ```
 
-We can look at the first tweet, or the most popular tweet...
-```{r, echo=TRUE}
-#NOTE: each tweet has the url at the end of the "text" col if you want to see
-#      the original tweet in web browser
+## Individual Tweets
+We can look at differing tweets of interest. For example, the earliest tweet in our data set. Note the url at the end - which we can click to go to that exact tweet!
+```{r first-tweet}
 first_tweet <- rt %>% 
   dplyr::select(text) %>% 
   head(1) %>%
   as.character()
 print(first_tweet)
+```
 
+Alternatively, we can look at the tweet that got the most retweets:
+```{r most-retweets, echo=FALSE}
 most_pop <- rt %>% 
   filter(retweet_count == max(retweet_count))
 print(most_pop$text)
-print(most_pop$retweet_count)
 ```
+That tweet had `r most_pop$retweet_count` retweets.
 
-Let's look at tweets we have over time. First, how many days do we have data for?
+## Time of Tweet
 
-```{r}
-#how many days do we have data for?
-max(rt$created_at) - min(rt$created_at)
-```
-Now let's plot the results. Note how the number of days matches the number of peaks - ie we have a daily pattern. This matches with intuiton.
+Let's look at tweets we have over time. Between the earliest and the most recent tweet there is a time difference of `r round(as.numeric(max(rt$created_at) - min(rt$created_at)),2)` days.
+
+Now let's plot the results. Note how the number of days matches the number of peaks - ie we have a daily pattern. This matches with intuiton about when during the day people are more likely to tweet.
 ```{r, fig.width=figwidth,fig.height=figheight}
 rt %>%
   ts_plot(by = "1 hour") +
@@ -112,10 +107,9 @@ rt %>%
   )
 ```
 
-# Section 3: Analysis by Countries
+# Analysis by Country
 
 Motivating Question: how does trend differ for different countries, especially time difference? 
-
 ```{r}
 #add the following variables:
 #  loc  (simplified location from country col)
@@ -133,13 +127,23 @@ rt <- rt %>%
   )
 
 #how many locations do we know? (note how many are unknown)
-table(rt$loc)
-round(100 * table(rt$loc) / dim(rt)[1],2) #percent of the data 
+perc_tab = round(100 * table(rt$loc) / dim(rt)[1],2) #percent of the data 
+
+
+country_tab <- rt %>% 
+  select(loc) %>%
+  group_by(loc) %>%
+  count() %>%
+  ungroup() %>%
+  rename(Frequency=n, Country=loc) %>%
+  mutate(Percent = round(100 * prop.table(Frequency),1))
+
+knitr::kable(country_tab, caption = "Frequency table of tweets by country")
 ```
 
-Aside: we could filter on known location in our search_tweets command, but that requires a google developer licence (which is a paid service)
+Aside: we could filter on known location in our search_tweets command, but that requires a [Google Developer Licence](https://play.google.com/apps/publish/signup/), which is a paid service.
 
-```{r}
+```{r country-cleaning}
 #Only the last 72 hours (3 days), which is important when we average as 
 #otherwise could skew our percentage of day
 last_72 <- rt %>%
@@ -158,7 +162,7 @@ tod_by_country$loc = factor(tod_by_country$loc,
                             levels = c("US","UK","Other or Unknown"))
 ```
 
-```{r, fig.width=figwidth,fig.height=figheight}
+```{r daily-tweets--by-country, fig.width=figwidth,fig.height=figheight}
 #PLOT 2: tweets by country
 tod_by_country %>%
   group_by(loc) %>%
@@ -181,10 +185,10 @@ tod_by_country %>%
 
 # Wordcloud
 
-Look at the word cloud for our data, first we must clean it up by getting in 
-correct format and remove common words 
+To create a word cloud for our data, first we must clean it up by getting in 
+correct format and remove common words.
 
-```{r}
+```{r wordcloud-cleaning}
 text_col <- rt$text
 stop_words <- c(stopwords("SMART"), stopwords("english"))
 
@@ -221,7 +225,7 @@ v <- sort(rowSums(m),decreasing=TRUE)
 d <- data.frame(word = names(v),freq=v)
 ```
 
-Now time for a word cloud! Are you surprised at the result?
+Now time for the word cloud! Are you surprised at the result?
 
 ```{r, fig.width=figwidth,fig.height=figheight, message=FALSE, warning=FALSE}
 wordcloud(words = d$word, freq = d$freq, min.freq = 5,
@@ -229,8 +233,103 @@ wordcloud(words = d$word, freq = d$freq, min.freq = 5,
           colors=brewer.pal(8, "Dark2"))
 ```
 
+# Sentiment Analysis (udpipe)
+
+Sentiment Analysis is about detecting the meaning or emotion (the sentiment!) behind the text. It involves looking at the tweet as a sentence and identifying patterns or words that can be mapped to the sentiment the person (or bot...) writing the tweet meant. 
+
+```{r udpipe set-up, eval=FALSE}
+#format the cleaned tweets into table with columns "text" (the tweets) and "doc_id" (its rownumber)
+#which is necessary for using the package udpipe
+ud_tweets <- tibble(text=cleaned_tweets) %>%
+  tibble::rowid_to_column("doc_id") %>% 
+  udpipe("english")
+```
+
+```{r udpipe set-up quickread, echo=FALSE}
+ud_tweets <- readRDS("rmd_stored_files/ud_tweets.rds")
+```
+
+## Word Type Plots
+
+```{r udpipe word-type-barplot}
+stats <- txt_freq(ud_tweets$upos)
+stats$key <- factor(stats$key, levels = rev(stats$key))
+barchart(key ~ freq, data = stats, col = "cadetblue", 
+         main = "UPOS (Universal Parts of Speech)\n frequency of occurrence", 
+         xlab = "Freq")
+```
+
+How similar is this to the information the wordcloud tells us? Interesting!
+
+```{r udpipe noun-barplot}
+stats <- subset(ud_tweets, upos %in% c("NOUN")) 
+stats <- txt_freq(stats$token)
+stats$key <- factor(stats$key, levels = rev(stats$key))
+barchart(key ~ freq, data = head(stats, 20), col = "cadetblue", 
+         main = "Most occurring nouns", xlab = "Freq")
+```
+
+## Tweet Sentiments
+
+We can get the sentiments for different tweets
+```{r udpipe sentiment-analysis}
+U2 <- subset(ud_tweets, upos == "ADJ" 
+             | upos == "ADV"
+             | upos == "NOUN"
+             | upos == "VERB")
 
 
+#get bing sentiment dictionary, with +1 for positive, -1 otherwise (negative)
+sent_dict = tidytext::get_sentiments("bing") %>% mutate(sentiment = ifelse(sentiment == "positive", 1, -1))
+
+# Get a sentiment dictionary lexicon 
+load(file("https://github.com/sborms/sentometrics/raw/master/data-raw/valence-raw/valShifters.rda"))
+
+#words with positive and negative sentiment
+polarity_terms <- rename(sent_dict, term = word, polarity = sentiment)
+
+#words which negate other words (e.g. cant, arent)
+polarity_negators <- subset(valShifters$valence_en, t == 1)$x
+
+#words which amplify others (e.g. absolutely)
+polarity_amplifiers <- subset(valShifters$valence_en, t == 2)$x
+
+#words which deamplify others (e.g. barely)
+polarity_deamplifiers <- subset(valShifters$valence_en, t == 3)$x
+
+# Do sentiment analysis based on the lexicon with polarity amplifiers and deamplifiers
+sentiments <- txt_sentiment(U2, term = "lemma", 
+                            polarity_terms = polarity_terms,
+                            polarity_negators = polarity_negators, 
+                            polarity_amplifiers = polarity_amplifiers,
+                            polarity_deamplifiers = polarity_deamplifiers)
+sentiments <- sentiments$data
+
+
+## Use cbind_dependencies to add the parent token to which the keyword is linked
+reasons <- sentiments %>% 
+  cbind_dependencies() %>%
+  select(doc_id, lemma, token, upos, sentiment_polarity, token_parent, lemma_parent, upos_parent, dep_rel) %>%
+  filter(sentiment_polarity < 0)# sentiment_polarity > 0)
+
+reasons <- filter(reasons, dep_rel %in% "amod")
+
+#take lemma and lemma parrent from reasons and count numbers of lemmas, then arrange by decending order
+word_cooccurences <- reasons %>% 
+  group_by(lemma, lemma_parent) %>%
+  summarise(cooc = n()) %>%
+  arrange(-cooc)
+
+knitr::kable(word_cooccurences %>% filter(cooc>10), caption = "word co-occurences")
+#shinyApp(
+#  server = function(input, output) {
+#  ui = fluidPage(DTOutput('tbl')),
+#    output$tbl = renderDT(
+#      word_cooccurences
+#    )
+#  }
+#)
+```
 
 # (Further Work) Topic Modelling 
 
@@ -238,7 +337,7 @@ We can allocate the tweets into separate groups, in what is called Topic Modelli
 
 ```{r ldavis-no-internet}
 #when not running the model - how to pull the json through 
-json = jsonlite::read_json(paste0(my_dir,'lda_ten_topics.json'))[[1]]
+json = jsonlite::read_json("rmd_stored_files/lda_ten_topics.json")[[1]]
 
 lda_vis <- serVis(json, open.browser = FALSE)
 
@@ -279,15 +378,12 @@ json <- createJSON(phi = lda_tweets$phi, theta = lda_tweets$theta, doc.length = 
                    term.frequency = lda_tweets$term.frequency, R = 15, lambda.step = 0.01, reorder.topics = TRUE)
 
 lda_vis <- serVis(json, open.browser = TRUE)
-
-
-
 ```
 
 It can be interactive, but here's a still image of what the output looks like 
 
 ```{r lda_image,  fig.cap="Still image of the topic modelling output", out.width = '100%'}
-knitr::include_graphics(paste0(my_dir,"lda_ten_topics.png"))
+knitr::include_graphics("rmd_stored_files/lda_ten_topics.png")
 ```
 
 
