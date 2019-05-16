@@ -1,0 +1,295 @@
+---
+title: "Twitter Scraping R Example"
+author: "Luke Shaw"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    number_sections: true
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+figwidth=10
+figheight=6.5
+```
+
+Example of using the package rtweet to live scrape from twitter. Currently the code contains all the information required for running live, but when run as a markdown document uses pre-created files (in Blue Peter fassion "here's one I made earlier"). The person running needs to specify where they have saved the following two files in the code chunk "dir":
+1) coffee_backup_tweets.rds
+2) lda_ten_topics.json
+3) lda_ten_topics.png
+
+```{r, message=FALSE}
+#Necessary packages for this script. If not in lib use fn install.packages()
+library("rtweet")
+library("httpuv")
+library("ggplot2")
+library("dplyr")
+library("purrr")
+library("lubridate")
+library("tm")
+library("wordcloud")
+library("jsonlite")
+library("lda")
+library("LDAvis")
+
+```
+
+# Getting the Data
+
+```{r, echo=TRUE}
+#what do we want to search for? [NOTE "#coffee" is default saved file]
+search_phrase <- '#coffee'
+```
+
+```{r, eval=FALSE}
+## search for 1000 tweets (max 18,000 per 15 min interval) featuring the chosen 
+## search_phrase. We only search for tweets written in english - which is 
+## important when performing analysis on the text
+## NOTE: May have to accept pop up and sign in to twitter at this stage
+search_phrase <- '#coffee'
+rt <- search_tweets(
+  search_phrase,
+  n = 18000, include_rts = FALSE,
+  langs = 'en'
+)
+```
+
+if the above code doesn't run correctly, use the below code and using the
+pop-up find the file "coffee_backup_tweets.rds"
+```{r dir, echo=FALSE}
+my_dir =  "/Users/lukeshaw/Google Drive/Personal Folder/ONS_Newport/PERSONAL_smr_with_r/twitter_scrape_example/rmd_stored_files/"
+```
+
+```{r}
+#note you'd have to define my_dir as working directory where file is
+rt <- readRDS(paste0(my_dir,"coffee_backup_tweets.rds"))
+```
+
+# Initial Data Analysis
+
+```{r, echo=TRUE}
+#What does the data look like?
+dim(rt) #each row is a tweet, each column is some information
+colnames(rt)[1:6] #first few column names. "test" is the tweet itself
+```
+
+We can look at the first tweet, or the most popular tweet...
+```{r, echo=TRUE}
+#NOTE: each tweet has the url at the end of the "text" col if you want to see
+#      the original tweet in web browser
+first_tweet <- rt %>% 
+  dplyr::select(text) %>% 
+  head(1) %>%
+  as.character()
+print(first_tweet)
+
+most_pop <- rt %>% 
+  filter(retweet_count == max(retweet_count))
+print(most_pop$text)
+print(most_pop$retweet_count)
+```
+
+Let's look at tweets we have over time. First, how many days do we have data for?
+
+```{r}
+#how many days do we have data for?
+max(rt$created_at) - min(rt$created_at)
+```
+Now let's plot the results. Note how the number of days matches the number of peaks - ie we have a daily pattern. This matches with intuiton.
+```{r, fig.width=figwidth,fig.height=figheight}
+rt %>%
+  ts_plot(by = "1 hour") +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(plot.title = ggplot2::element_text(face = "bold")) +
+  ggplot2::labs(
+    x = NULL, y = NULL,
+    title = paste("Frequency of",search_phrase,"Twitter statuses"),
+    subtitle = "Twitter status (tweet) counts aggregated using one-hour intervals",
+    caption = "\nSource: Data collected from Twitter's REST API via rtweet"
+  )
+```
+
+# Section 3: Analysis by Countries
+
+Motivating Question: how does trend differ for different countries, especially time difference? 
+
+```{r}
+#add the following variables:
+#  loc  (simplified location from country col)
+#  hour (simplified version of created_at col)
+rt <- rt %>% 
+  mutate(
+    loc = case_when(
+      country == "United States"  ~ 'US',
+      country == "United Kingdom" ~ 'UK',
+#      is.na(country)              ~ 'Unknown',
+      TRUE                        ~ 'Other or Unknown')
+    ) %>%
+  mutate(
+    hour = lubridate::hour(created_at)
+  )
+
+#how many locations do we know? (note how many are unknown)
+table(rt$loc)
+round(100 * table(rt$loc) / dim(rt)[1],2) #percent of the data 
+```
+
+Aside: we could filter on known location in our search_tweets command, but that requires a google developer licence (which is a paid service)
+
+```{r}
+#Only the last 72 hours (3 days), which is important when we average as 
+#otherwise could skew our percentage of day
+last_72 <- rt %>%
+  filter(created_at > (max(created_at) - 3 * 60*60*24))
+
+#aggregate up for plotting to make a variables:
+#  n    number of results for that country and hour
+#  perc percentage of that country's daily total
+last_72 %>%
+  group_by(loc, hour) %>%
+  summarise(n = n() ) %>%
+  mutate(perc = 100 * n / sum(n)) -> tod_by_country
+
+#make location a factor variable, and set order for when plotting
+tod_by_country$loc = factor(tod_by_country$loc, 
+                            levels = c("US","UK","Other or Unknown"))
+```
+
+```{r, fig.width=figwidth,fig.height=figheight}
+#PLOT 2: tweets by country
+tod_by_country %>%
+  group_by(loc) %>%
+  ggplot(aes(x=hour, y=perc, col = loc)) +
+  geom_line() + 
+  ggplot2::theme_minimal() +
+  ggplot2::theme(legend.position = c(0.9,0.9), 
+                 legend.background = element_rect(fill = "white")) + 
+  ggplot2::theme(plot.title = ggplot2::element_text(face = "bold")) +
+  ggplot2::labs(
+    x = "Hour (GMT)", 
+    y = "% of Day",
+    color = 'Location',
+    title = paste("Daily percentage of",search_phrase,
+                  "Twitter statuses, grouped by location, over the last 3 days"),
+    subtitle = "Note time difference in peak activity due to time zones",
+    caption = "\nSource: Data collected from Twitter's REST API via rtweet"
+  )
+```
+
+# Wordcloud
+
+Look at the word cloud for our data, first we must clean it up by getting in 
+correct format and remove common words 
+
+```{r}
+text_col <- rt$text
+stop_words <- c(stopwords("SMART"), stopwords("english"))
+
+# pre-processing for topic modelling. This is all "regular expressions" - see 
+#https://www.rstudio.com/wp-content/uploads/2016/09/RegExCheatsheet.pdf 
+#for info on exactly what each character means
+
+cleaned_tweets <- gsub("https.*","",text_col) # removes url at end of most tweets
+cleaned_tweets <- tolower(cleaned_tweets) # force to lowercase
+cleaned_tweets <- gsub(search_phrase, "", cleaned_tweets) #remove phrase as otherwise would dominate wordcloud
+cleaned_tweets <- gsub(gsub("#","",search_phrase), "", cleaned_tweets) #remove phrase without # in
+cleaned_tweets <- gsub('[^[:alnum:] ]', "", cleaned_tweets) # removes non-alpha numeric symbols (inc hashtag)
+cleaned_tweets <- gsub('\\d+', '', cleaned_tweets) #removes numbers or digits
+cleaned_tweets <- gsub("'", "", cleaned_tweets) #removes apostrophes
+cleaned_tweets <- gsub("[[:punct:]]", " ", cleaned_tweets) # removes punctuation
+cleaned_tweets <- gsub("[[:cntrl:]]", " ", cleaned_tweets) # removes control characters
+cleaned_tweets <- gsub("^[[:space:]]+", "", cleaned_tweets) # removes whitespace at beginning of documents
+cleaned_tweets <- gsub("[[:space:]]+$", "", cleaned_tweets) # removes whitespace at end of documents
+cleaned_tweets <- gsub("\\s+", " ", cleaned_tweets)
+
+doc.list <- strsplit(cleaned_tweets, " ")
+
+# compute the table of terms
+term.table <- table(unlist(doc.list))
+term.table <- sort(term.table, decreasing = TRUE)
+
+# remove terms that are stop words or occur fewer than 5 times
+del <- names(term.table) %in% stop_words | term.table < 5
+term.table <- term.table[!del]
+vocab <- names(term.table)
+
+m <- as.matrix(term.table)
+v <- sort(rowSums(m),decreasing=TRUE)
+d <- data.frame(word = names(v),freq=v)
+```
+
+Now time for a word cloud! Are you surprised at the result?
+
+```{r, fig.width=figwidth,fig.height=figheight, message=FALSE, warning=FALSE}
+wordcloud(words = d$word, freq = d$freq, min.freq = 5,
+          max.words=200, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+```
+
+
+
+
+# (Further Work) Topic Modelling 
+
+We can allocate the tweets into separate groups, in what is called Topic Modelling. Pre-defined algorithms search the texts for similarities, and we can produce beautiful 
+
+```{r ldavis-no-internet}
+#when not running the model - how to pull the json through 
+json = jsonlite::read_json(paste0(my_dir,'lda_ten_topics.json'))[[1]]
+
+lda_vis <- serVis(json, open.browser = FALSE)
+
+```
+
+```{r ldavis, eval=FALSE}
+#put the documents into the format required by the lda package
+get.terms <- function(x) {
+  index <- match(x, vocab)
+  index <- index[!is.na(index)]
+  rbind(as.integer(index - 1), as.integer(rep(1, length(index))))
+}
+documents <- lapply(doc.list, get.terms)
+
+D <- length(documents) # number of documents
+W <- length(vocab) # number of terms in the vocab
+doc.length <- sapply(documents,function(x) sum(x[2, ])) # number of tokens per document
+N <- sum(doc.length) # total number of tokens in the data
+term.frequency <- as.integer(term.table) # frequency of terms in the corpus
+
+K <- 10 # number of topics
+G <- 5000 # number of iterations
+alpha <- 0.02 # topic-term distributions
+eta <- 0.02 # document-topic distributions
+
+# fit the model
+set.seed(357)
+fit <- lda.collapsed.gibbs.sampler(documents = documents, K = K, vocab = vocab, num.iterations = G, alpha = alpha, eta = eta, 
+                                   initial = NULL, burnin = 0, compute.log.likelihood = TRUE)
+
+theta <- t(apply(fit$document_sums + alpha, 2, function(x) x/sum(x)))
+colnames(theta) <- paste("Topic",1:K)
+phi <- t(apply(t(fit$topics) + eta, 2, function(x) x/sum(x)))
+
+lda_tweets <- list(phi = phi, theta = theta, doc.length = doc.length, vocab = vocab, term.frequency = term.frequency)
+
+json <- createJSON(phi = lda_tweets$phi, theta = lda_tweets$theta, doc.length = lda_tweets$doc.length, vocab = lda_tweets$vocab, 
+                   term.frequency = lda_tweets$term.frequency, R = 15, lambda.step = 0.01, reorder.topics = TRUE)
+
+lda_vis <- serVis(json, open.browser = TRUE)
+
+
+
+```
+
+It can be interactive, but here's a still image of what the output looks like 
+
+```{r lda_image,  fig.cap="Still image of the topic modelling output", out.width = '100%'}
+knitr::include_graphics(paste0(my_dir,"lda_ten_topics.png"))
+```
+
+
+
+
